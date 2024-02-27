@@ -2,6 +2,7 @@ from collections import defaultdict
 from typing import Any, Dict
 
 import torch
+from torch.distributed._tensor.api import DTensor
 from torch.utils._python_dispatch import TorchDispatchMode
 
 
@@ -66,6 +67,8 @@ class CommDebugMode(TorchDispatchMode):
         super().__exit__(*args)
 
     def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+        if any(t == DTensor for t in types):
+            return NotImplemented
         kwargs = kwargs if kwargs else {}
         out = func(*args, **kwargs)
         func_packet = func._overloadpacket
