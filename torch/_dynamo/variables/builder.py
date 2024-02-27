@@ -1691,9 +1691,7 @@ def _automatic_dynamic(
     constraint_dims = []
     for i in range(e.dim()):
         # NB: mark dynamic has precedence over static
-        marked_dynamic = i in {
-            dim_range.dim for dim_range in getattr(e, "_dynamo_dynamic_indices", set())
-        }
+        marked_dynamic = i in getattr(e, "_dynamo_dynamic_indices", set())
         marked_weak_dynamic = i in getattr(e, "_dynamo_weak_dynamic_indices", set())
         marked_static = i in getattr(e, "_dynamo_static_indices", set())
 
@@ -1715,7 +1713,7 @@ def _automatic_dynamic(
         if constraint is None:
             if marked_dynamic and not config.allow_ignore_mark_dynamic:
                 dim_range = [
-                    dr for dr in e._dynamo_dynamic_indices if dr.dim == i
+                    dr for dr in e._dynamo_dynamic_range if dr.dim == i
                 ].pop()
                 if dim_range.min is None and dim_range.max is None:
                     constraint_dim = RelaxedUnspecConstraint(warn_only=False)

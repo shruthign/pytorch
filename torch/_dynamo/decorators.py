@@ -225,8 +225,10 @@ def mark_dynamic(t, index, min=None, max=None):
     if isinstance(index, int):
         if not hasattr(t, "_dynamo_dynamic_indices"):
             t._dynamo_dynamic_indices = set()
+            t._dynamo_dynamic_range = set()
         # TODO(voz): Should we bounds check?
-        t._dynamo_dynamic_indices.add(_DimRange(index, min, max))
+        t._dynamo_dynamic_indices.add(index)
+        t._dynamo_dynamic_range.add(_DimRange(index, min, max))
         return
 
     assert isinstance(index, (list, tuple))
