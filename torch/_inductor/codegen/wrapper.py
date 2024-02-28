@@ -417,6 +417,7 @@ class WrapperCodeGen(CodeGen):
         self.supports_intermediate_hooks = True
         self.expr_printer = pexpr
         self.user_defined_kernel_cache: Dict[Tuple[Any, ...], str] = {}
+        self.user_defined_kernel_triton_meta_cache: Dict[Tuple[Any, ...], Any] = {}
         self.unbacked_symbol_decls: Set[str] = set()  # str of sympy.Symbol
         self.allow_stack_allocation: Optional[bool] = None
         self.stack_allocated_buffers: Dict[BufferName, ir.Buffer] = {}
@@ -623,7 +624,9 @@ class WrapperCodeGen(CodeGen):
             args.append(f"out={codegen_reference}")
         self.writeline(f"{kernel}({', '.join(args)})")
 
-    def generate_user_defined_triton_kernel(self, kernel_name, grid, configs, args):
+    def generate_user_defined_triton_kernel(
+        self, kernel_name, grid, configs, args, triton_meta
+    ):
         grid, code = user_defined_kernel_grid_fn_code(
             kernel_name, configs, grid, wrapper=self
         )
@@ -975,7 +978,10 @@ class WrapperCodeGen(CodeGen):
         cache_key = tuple(cache_key)
 
         if cache_key in self.user_defined_kernel_cache:
-            return self.user_defined_kernel_cache[cache_key]
+            return (
+                self.user_defined_kernel_cache[cache_key],
+                self.user_defined_kernel_triton_meta_cache[cache_key],
+            )
 
         name = f"{original_name}_{len(self.user_defined_kernel_cache)}"
         # Add to the cache for the next use
@@ -1004,6 +1010,7 @@ class WrapperCodeGen(CodeGen):
         signature: List[KernelArgType] = []
         constants = {}
         non_constant_indices = []
+        equal_to_1_args: List[str] = []
         for idx, key in enumerate(kernel.arg_names):
             if key not in kwargs:
                 continue
@@ -1034,19 +1041,39 @@ class WrapperCodeGen(CodeGen):
                     )
                 else:
                     signature.append(SizeArg(key, arg))
+                    if arg is not None and V.graph.sizevars.statically_known_equals(arg, 1):  # type: ignore[arg-type]
+                        equal_to_1_args.append(key)
         index_dtype = "tl.int32"
         inductor_meta = {
             "kernel_name": name,
         }
         triton_meta = {
             "signature": signature_to_meta(
-                signature, size_dtype=index_dtype, indices=non_constant_indices
+                signature,
+                size_dtype=index_dtype,
+                indices=non_constant_indices,
             ),
             "device": V.graph.scheduler.current_device.index,
             "device_type": V.graph.scheduler.current_device.type,
-            "constants": constants,
-            "configs": [config_of(signature, indices=non_constant_indices)],
+            # Triton compiler includes equal_to_1 args into constants even
+            # when they are not constexpr. otherwise there may be a segfault
+            # during launching the Inductor-compiled Triton kernel.
+            # TODO(aakhundov): add None args to constnats, too. currently, this
+            # causes CUDA errors in test_aot_inductor.test_triton_kernel_with_none_input.
+            # https://github.com/pytorch/pytorch/issues/120478#issuecomment-1962822307
+            # https://github.com/openai/triton/blob/231efe9ed2d200be0f69a07c298e4342b08efe3d/python/triton/runtime/jit.py#L384
+            "constants": {
+                **constants,
+                **{arg: 1 for arg in equal_to_1_args},
+            },
+            "configs": [
+                config_of(
+                    signature,
+                    indices=non_constant_indices,
+                )
+            ],
         }
+        self.user_defined_kernel_triton_meta_cache[cache_key] = triton_meta
         configs = [
             {
                 "kwargs": config.kwargs,
@@ -1104,7 +1131,7 @@ class WrapperCodeGen(CodeGen):
             compile_wrapper.getvalue(),
             metadata,
         )
-        return name
+        return name, triton_meta
 
     def generate_numel_expr(self, kernel_name: str, tree):
         expr = f"{kernel_name}_{tree.prefix}numel"
@@ -1161,6 +1188,7 @@ class WrapperCodeGen(CodeGen):
         triton=True,
         arg_types=None,
         grid_fn: str = "grid",
+        triton_meta=None,
     ):
         """
         Generates kernel call code.
