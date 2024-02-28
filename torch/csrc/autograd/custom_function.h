@@ -7,6 +7,7 @@
 #include <torch/csrc/autograd/function.h>
 #include <torch/csrc/autograd/variable.h>
 #include <torch/csrc/autograd/variable_info.h>
+#include <torch/csrc/dynamo/compiled_autograd.h>
 #include <vector>
 
 namespace torch::autograd {
@@ -98,6 +99,11 @@ struct TORCH_API Function {
   template <typename X = T, typename... Args>
   static auto apply(Args&&... args)
       -> std::enable_if_t<std::is_same_v<X, T>, forward_t<X, Args...>>;
+
+  // Flag overriden by user to enable compiled autograd tracing for custom function <T>.
+  // To set this flag to true, you need to ensure that all operations within <T> happen on tensors,
+  // and that there are no side effects.
+  static constexpr bool is_traceable = false;
 };
 
 /// Context to save information during `forward` that can be accessed in
@@ -173,6 +179,55 @@ struct CppNode : public Node {
 
   void set_ctx_grad_fn(const std::shared_ptr<Node>& node);
   void save_variables_to_ctx();
+
+  void compiled_args(CompiledNodeArgs& args) override {
+    // TODO: collect the actual function id by calling the python counter
+    // args.collect(ctx_.saved_data);
+    // args.collect(ctx_.non_differentiable_);
+    // args.collect(ctx_.dirty_inputs_);
+    args.collect(ctx_.saved_variables_);
+    // args.collect(ctx_.to_save_);
+    // args.collect(ctx_.materialize_grads_);
+    // args.collect(ctx_.grad_fn_);
+    args.collect(ctx_.has_freed_buffers_);
+    args.collect(is_variable_input_);
+    args.collect(input_info_);
+    args.collect(output_info_);
+  }
+
+  variable_list apply_with_saved(
+      const variable_list& inputs,
+      SwapSavedVariables& saved) override {
+    if (!T::is_traceable) {
+      throw std::runtime_error(
+          std::string("apply_with_saved not implemented for non-traceable node: ") + name());
+    }
+
+    // saved.before(ctx_.saved_data);
+    // saved.before(ctx_.non_differentiable_);
+    // saved.before(ctx_.dirty_inputs_);
+    saved.before(ctx_.saved_variables_);
+    // saved.before(ctx_.to_save_);
+    // saved.before(ctx_.materialize_grads_);
+    // saved.before(ctx_.grad_fn_);
+    saved.before(ctx_.has_freed_buffers_);
+    // saved.before(is_variable_input_);
+    saved.before(input_info_);
+    saved.before(output_info_);
+    auto results = apply(variable_list(inputs));
+    // saved.after(ctx_.saved_data);
+    // saved.after(ctx_.non_differentiable_);
+    // saved.after(ctx_.dirty_inputs_);
+    saved.after(ctx_.saved_variables_);
+    // saved.after(ctx_.to_save_);
+    // saved.after(ctx_.materialize_grads_);
+    // saved.after(ctx_.grad_fn_);
+    saved.after(ctx_.has_freed_buffers_);
+    // saved.after(is_variable_input_);
+    saved.after(input_info_);
+    saved.after(output_info_);
+    return results;
+  }
 };
 
 struct ExtractVariables : IterArgs<ExtractVariables> {
